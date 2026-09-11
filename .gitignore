@@ -1,0 +1,22 @@
+# Archivos del sistema operativo
+desktop.ini
+.DS_Store
+
+# Secretos y variables locales
+.env
+.env.*
+!.env.example
+
+# Entornos generados por el instalador
+*/docker-compose.yml
+*/Dockerfile
+*/config/odoo.conf
+*/odoo/
+*/enterprise/
+*/scripts/init-odoo-db.sh
+
+# Archivos temporales y de editores
+*.log
+*.swp
+.idea/
+.vscode/
