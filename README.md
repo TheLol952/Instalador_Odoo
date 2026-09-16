@@ -22,6 +22,18 @@ El instalador solicitará la versión y edición de Odoo, los nombres del entorn
 
 Cada instalación se crea en una nueva carpeta dentro del directorio del instalador. Sus secretos se guardan en `.env` y `config/odoo.conf`; estos archivos no deben subirse a Git.
 
+El gestor de bases de datos queda habilitado en ambos modos y se abre en:
+
+```text
+http://localhost:<PUERTO_ODOO>/web/database/manager
+```
+
+En modo de base única, `db_name` y `dbfilter` limitan el entorno a la base configurada,
+pero `list_db = True` permite verla en el gestor para crear respaldos. En modo múltiple,
+el filtro permite gestionar todas las bases accesibles para el usuario PostgreSQL.
+Las operaciones de respaldo, restauración, duplicación, creación y eliminación solicitan
+la master password almacenada como `admin_passwd` en `config/odoo.conf`.
+
 ## Qué realiza
 
 - Instala o actualiza Docker Engine y Docker Compose v2 desde el repositorio oficial de Docker.

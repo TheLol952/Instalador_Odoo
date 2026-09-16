@@ -166,7 +166,7 @@ case "$MULTI_DB_OPTION" in
     ;;
   *)
     ODOO_MULTI_DB="false"
-    ODOO_LIST_DB="False"
+    ODOO_LIST_DB="True"
     ODOO_DBFILTER="^${ODOO_DB_NAME}$"
     ;;
 esac
@@ -557,10 +557,7 @@ echo "   Odoo:    http://localhost:${ODOO_HOST_PORT}"
 echo "   DB inicial: ${ODOO_DB_NAME}"
 echo "   Multi DB:   ${ODOO_MULTI_DB}"
 echo "   Usuario interno Odoo inicial: ${ODOO_ADMIN_LOGIN}"
-
-if [ "$ODOO_MULTI_DB" = "true" ]; then
-  echo "   Database Manager: http://localhost:${ODOO_HOST_PORT}/web/database/manager"
-fi
+echo "   Database Manager: http://localhost:${ODOO_HOST_PORT}/web/database/manager"
 
 echo ""
 echo "Las contraseñas quedaron guardadas en:"
