@@ -329,6 +329,7 @@ RUN apt-get update && apt-get install -y \\
         xmltodict \\
         rarfile \\
         py7zr \\
+        jsonschema \\
         psycopg2-binary \\
     && apt-get clean \\
     && rm -rf /var/lib/apt/lists/*
