@@ -478,6 +478,7 @@ services:
   odoo-init:
     build: .
     container_name: "${PROJECT_SLUG}-init"
+    profiles: ["init"]
     restart: "no"
     depends_on:
       db:
@@ -504,8 +505,6 @@ services:
     depends_on:
       db:
         condition: service_healthy
-      odoo-init:
-        condition: service_completed_successfully
     ports:
       - "${ODOO_HOST_PORT}:8069"
     volumes:
@@ -546,7 +545,9 @@ EOF
 echo ""
 echo ">> Levantando servicios..."
 
-sudo docker compose -f docker-compose.yml up -d --build
+sudo docker compose -f docker-compose.yml up -d db
+sudo docker compose -f docker-compose.yml run --rm --build odoo-init
+sudo docker compose -f docker-compose.yml up -d --build web
 
 echo ""
 echo "✅ Listo."
@@ -570,4 +571,8 @@ echo "Comandos útiles:"
 echo "   cd ${PROJECT_ROOT}"
 echo "   sudo docker compose ps"
 echo "   sudo docker compose logs -f web"
-echo "   sudo docker compose logs -f odoo-init"
+echo "   sudo docker compose restart web"
+echo "   sudo docker compose restart"
+echo ""
+echo "El servicio odoo-init solo se ejecuta durante la instalación."
+echo "No se incluye en los comandos normales porque usa el perfil 'init'."
