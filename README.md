@@ -18,7 +18,9 @@ chmod +x OdooInstall.sh
 ./OdooInstall.sh
 ```
 
-El instalador solicitará la versión y edición de Odoo, los nombres del entorno y de la base de datos, los puertos y las credenciales. Si se dejan vacías las contraseñas, se generan automáticamente.
+El instalador solicitará la versión y edición de Odoo, los nombres del entorno y de la base de datos, los puertos y las credenciales. También pedirá el nombre, usuario/correo y contraseña del primer administrador, además de la cantidad y los datos de los usuarios adicionales. Si se dejan vacías las contraseñas, se generan automáticamente.
+
+Al finalizar se muestra un resumen con el nombre, usuario y contraseña de todas las cuentas creadas para que pueda copiarse o guardarse. Las credenciales de los usuarios adicionales se pasan al inicializador mediante un archivo temporal protegido que se elimina al terminar; no quedan almacenadas en el proyecto. La credencial del administrador sí permanece en el archivo `.env`, con permisos restringidos, para conservar el comportamiento de administración del entorno.
 
 Cada instalación se crea en una nueva carpeta dentro del directorio del instalador. Sus secretos se guardan en `.env` y `config/odoo.conf`; estos archivos no deben subirse a Git.
 
@@ -40,7 +42,7 @@ la master password almacenada como `admin_passwd` en `config/odoo.conf`.
 - Clona la rama seleccionada de Odoo Community.
 - Clona los módulos Enterprise cuando se selecciona esa edición.
 - Genera la configuración de PostgreSQL, Odoo y Docker Compose.
-- Inicializa la base de datos una sola vez y levanta los contenedores.
+- Inicializa la base de datos una sola vez, configura el administrador, crea los usuarios adicionales y levanta los contenedores.
 
 El servicio `odoo-init` es una tarea auxiliar de una sola ejecución. Crea las tablas
 iniciales de Odoo y configura el primer usuario administrador, pero no es necesario

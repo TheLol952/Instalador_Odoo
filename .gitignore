@@ -10,6 +10,7 @@ desktop.ini
 # Entornos generados por el instalador
 */docker-compose.yml
 */Dockerfile
+*/.odoo-users.env
 */config/odoo.conf
 */odoo/
 */enterprise/

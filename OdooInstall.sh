@@ -32,6 +32,10 @@ random_password() {
   fi
 }
 
+base64_encode() {
+  printf '%s' "$1" | base64 | tr -d '\n'
+}
+
 port_in_use() {
   local port="$1"
 
@@ -139,7 +143,10 @@ DEFAULT_POSTGRES_PORT="$(next_free_port 5432)"
 read -rp "Puerto PostgreSQL externo [${DEFAULT_POSTGRES_PORT}]: " POSTGRES_HOST_PORT
 POSTGRES_HOST_PORT="${POSTGRES_HOST_PORT:-$DEFAULT_POSTGRES_PORT}"
 
-read -rp "Usuario administrador interno inicial de Odoo [admin]: " ODOO_ADMIN_LOGIN
+read -rp "Nombre del primer usuario administrador [Administrador]: " ODOO_ADMIN_NAME
+ODOO_ADMIN_NAME="${ODOO_ADMIN_NAME:-Administrador}"
+
+read -rp "Usuario/correo del primer usuario administrador [admin]: " ODOO_ADMIN_LOGIN
 ODOO_ADMIN_LOGIN="${ODOO_ADMIN_LOGIN:-admin}"
 
 read -rsp "Contraseña administrador interno inicial de Odoo [auto-generar]: " ODOO_ADMIN_PASSWORD
@@ -147,6 +154,78 @@ echo ""
 if [ -z "$ODOO_ADMIN_PASSWORD" ]; then
   ODOO_ADMIN_PASSWORD="$(random_password)"
 fi
+
+echo ""
+while true; do
+  read -rp "¿Cuántos usuarios adicionales necesitás? [0]: " ADDITIONAL_USER_COUNT
+  ADDITIONAL_USER_COUNT="${ADDITIONAL_USER_COUNT:-0}"
+
+  if [[ "$ADDITIONAL_USER_COUNT" =~ ^[0-9]+$ ]]; then
+    break
+  fi
+
+  echo "Debes ingresar un número entero igual o mayor que 0."
+done
+
+declare -a ODOO_USER_NAMES=()
+declare -a ODOO_USER_LOGINS=()
+declare -a ODOO_USER_PASSWORDS=()
+ODOO_USERS_DATA=""
+
+for ((user_index = 1; user_index <= ADDITIONAL_USER_COUNT; user_index++)); do
+  echo ""
+  echo ">> Datos del usuario adicional ${user_index} de ${ADDITIONAL_USER_COUNT}"
+
+  while true; do
+    read -rp "Nombre: " USER_NAME
+    if [ -n "$USER_NAME" ]; then
+      break
+    fi
+    echo "El nombre no puede quedar vacío."
+  done
+
+  while true; do
+    read -rp "Usuario/correo: " USER_LOGIN
+
+    if [ -z "$USER_LOGIN" ]; then
+      echo "El usuario/correo no puede quedar vacío."
+      continue
+    fi
+
+    DUPLICATE_LOGIN="false"
+    if [ "$USER_LOGIN" = "$ODOO_ADMIN_LOGIN" ]; then
+      DUPLICATE_LOGIN="true"
+    else
+      for EXISTING_LOGIN in "${ODOO_USER_LOGINS[@]}"; do
+        if [ "$USER_LOGIN" = "$EXISTING_LOGIN" ]; then
+          DUPLICATE_LOGIN="true"
+          break
+        fi
+      done
+    fi
+
+    if [ "$DUPLICATE_LOGIN" = "false" ]; then
+      break
+    fi
+
+    echo "Ese usuario/correo ya fue ingresado. Usa uno diferente."
+  done
+
+  read -rsp "Contraseña [auto-generar]: " USER_PASSWORD
+  echo ""
+  if [ -z "$USER_PASSWORD" ]; then
+    USER_PASSWORD="$(random_password)"
+  fi
+
+  ODOO_USER_NAMES+=("$USER_NAME")
+  ODOO_USER_LOGINS+=("$USER_LOGIN")
+  ODOO_USER_PASSWORDS+=("$USER_PASSWORD")
+
+  ENCODED_NAME="$(base64_encode "$USER_NAME")"
+  ENCODED_LOGIN="$(base64_encode "$USER_LOGIN")"
+  ENCODED_PASSWORD="$(base64_encode "$USER_PASSWORD")"
+  ODOO_USERS_DATA+="${ENCODED_NAME}:${ENCODED_LOGIN}:${ENCODED_PASSWORD};"
+done
 
 read -rsp "Master password de Odoo Database Manager [auto-generar]: " ODOO_MASTER_PASSWORD
 echo ""
@@ -246,6 +325,19 @@ echo "   ${PROJECT_ROOT}"
 
 mkdir -p config scripts enterprise
 
+# Compose usa este archivo únicamente al ejecutar odoo-init. Se elimina tanto si
+# la instalación finaliza correctamente como si el script termina con un error.
+USERS_ENV_FILE="${PROJECT_ROOT}/.odoo-users.env"
+cleanup_users_env() {
+  if [ -f "$USERS_ENV_FILE" ]; then
+    rm -f -- "$USERS_ENV_FILE"
+  fi
+}
+trap cleanup_users_env EXIT INT TERM
+
+umask 077
+printf 'ODOO_USERS_DATA=%s\n' "$ODOO_USERS_DATA" > "$USERS_ENV_FILE"
+
 # ------------------------
 # Clonar Odoo Core
 # ------------------------
@@ -300,6 +392,7 @@ ODOO_DB_USER=${ODOO_DB_USER}
 ODOO_DB_PASSWORD=${ODOO_DB_PASSWORD}
 ODOO_HOST_PORT=${ODOO_HOST_PORT}
 POSTGRES_HOST_PORT=${POSTGRES_HOST_PORT}
+ODOO_ADMIN_NAME=${ODOO_ADMIN_NAME}
 ODOO_ADMIN_LOGIN=${ODOO_ADMIN_LOGIN}
 ODOO_ADMIN_PASSWORD=${ODOO_ADMIN_PASSWORD}
 ODOO_MASTER_PASSWORD=${ODOO_MASTER_PASSWORD}
@@ -430,19 +523,50 @@ odoo -c /etc/odoo/odoo.conf \
   --without-demo=all \
   --stop-after-init
 
-echo ">> Configurando usuario administrador interno de Odoo..."
+echo ">> Configurando administrador y usuarios adicionales de Odoo..."
 
 odoo shell -c /etc/odoo/odoo.conf -d "${ODOO_DB_NAME}" <<'PY'
+import base64
 import os
+
+
+def decode(value):
+    return base64.b64decode(value).decode('utf-8')
+
 
 admin = env.ref('base.user_admin', raise_if_not_found=False)
 
-if admin:
-    admin.write({
-        'login': os.environ.get('ODOO_ADMIN_LOGIN', 'admin'),
-        'password': os.environ['ODOO_ADMIN_PASSWORD'],
+if not admin:
+    raise RuntimeError("No se encontró el usuario administrador base de Odoo")
+
+admin_login = os.environ.get('ODOO_ADMIN_LOGIN', 'admin')
+admin.write({
+    'name': os.environ.get('ODOO_ADMIN_NAME', 'Administrador'),
+    'login': admin_login,
+    'email': admin_login,
+    'password': os.environ['ODOO_ADMIN_PASSWORD'],
+})
+
+users_data = os.environ.get('ODOO_USERS_DATA', '')
+users = env['res.users'].with_context(no_reset_password=True)
+
+for record in filter(None, users_data.split(';')):
+    encoded_name, encoded_login, encoded_password = record.split(':', 2)
+    name = decode(encoded_name)
+    login = decode(encoded_login)
+    password = decode(encoded_password)
+
+    if users.search_count([('login', '=', login)]):
+        raise ValueError(f"Ya existe un usuario de Odoo con el login {login!r}")
+
+    users.create({
+        'name': name,
+        'login': login,
+        'email': login,
+        'password': password,
     })
-    env.cr.commit()
+
+env.cr.commit()
 PY
 
 echo ">> Base inicializada correctamente."
@@ -494,8 +618,10 @@ services:
       USER: "${ODOO_DB_USER}"
       PASSWORD: "${ODOO_DB_PASSWORD}"
       ODOO_DB_NAME: "${ODOO_DB_NAME}"
+      ODOO_ADMIN_NAME: "${ODOO_ADMIN_NAME}"
       ODOO_ADMIN_LOGIN: "${ODOO_ADMIN_LOGIN}"
       ODOO_ADMIN_PASSWORD: "${ODOO_ADMIN_PASSWORD}"
+      ODOO_USERS_DATA: "${ODOO_USERS_DATA:-}"
     command: ["bash", "/usr/local/bin/init-odoo-db.sh"]
 
   web:
@@ -546,7 +672,8 @@ echo ""
 echo ">> Levantando servicios..."
 
 sudo docker compose -f docker-compose.yml up -d db
-sudo docker compose -f docker-compose.yml run --rm --build odoo-init
+sudo docker compose --env-file .env --env-file .odoo-users.env -f docker-compose.yml run --rm --build odoo-init
+cleanup_users_env
 sudo docker compose -f docker-compose.yml up -d --build web
 
 echo ""
@@ -560,9 +687,28 @@ echo "   Usuario interno Odoo inicial: ${ODOO_ADMIN_LOGIN}"
 echo "   Database Manager: http://localhost:${ODOO_HOST_PORT}/web/database/manager"
 
 echo ""
+echo "============================================================"
+echo " CREDENCIALES DE USUARIOS ODOO"
+echo "============================================================"
+printf 'Nombre:     %s\n' "$ODOO_ADMIN_NAME"
+printf 'Usuario:    %s\n' "$ODOO_ADMIN_LOGIN"
+printf 'Contraseña: %s\n' "$ODOO_ADMIN_PASSWORD"
+
+for ((user_index = 0; user_index < ADDITIONAL_USER_COUNT; user_index++)); do
+  echo "------------------------------------------------------------"
+  printf 'Nombre:     %s\n' "${ODOO_USER_NAMES[$user_index]}"
+  printf 'Usuario:    %s\n' "${ODOO_USER_LOGINS[$user_index]}"
+  printf 'Contraseña: %s\n' "${ODOO_USER_PASSWORDS[$user_index]}"
+done
+
+echo "============================================================"
+echo "Guarda o copia estas credenciales antes de cerrar la terminal."
+
+echo ""
 echo "Las contraseñas quedaron guardadas en:"
 echo "   ${PROJECT_ROOT}/.env"
 echo "   ${PROJECT_ROOT}/config/odoo.conf"
+echo "Las contraseñas de los usuarios adicionales no se guardan en archivos."
 echo ""
 echo "Comandos útiles:"
 echo "   cd ${PROJECT_ROOT}"
