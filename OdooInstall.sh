@@ -32,10 +32,6 @@ random_password() {
   fi
 }
 
-base64_encode() {
-  printf '%s' "$1" | base64 | tr -d '\n'
-}
-
 port_in_use() {
   local port="$1"
 
@@ -43,6 +39,25 @@ port_in_use() {
     ss -ltn | awk '{print $4}' | grep -Eq "[:.]${port}$"
   else
     return 1
+  fi
+}
+
+validate_port() {
+  local port="$1"
+
+  if ! [[ "$port" =~ ^[0-9]+$ ]]; then
+    echo "Puerto inválido"
+    exit 1
+  fi
+
+  if ((port < 1024 || port > 65535)); then
+    echo "Puerto fuera de rango"
+    exit 1
+  fi
+
+  if port_in_use "$port"; then
+    echo "El puerto ${port} ya está ocupado. Selecciona otro puerto para Odoo."
+    exit 1
   fi
 }
 
@@ -136,12 +151,9 @@ if [ -z "$ODOO_DB_PASSWORD" ]; then
 fi
 
 DEFAULT_ODOO_PORT="$(next_free_port 8069)"
-read -rp "Puerto HTTP externo para Odoo [${DEFAULT_ODOO_PORT}]: " ODOO_HOST_PORT
+read -rp "Puerto local para publicar Odoo detrás de Nginx [${DEFAULT_ODOO_PORT}]: " ODOO_HOST_PORT
 ODOO_HOST_PORT="${ODOO_HOST_PORT:-$DEFAULT_ODOO_PORT}"
-
-DEFAULT_POSTGRES_PORT="$(next_free_port 5432)"
-read -rp "Puerto PostgreSQL externo [${DEFAULT_POSTGRES_PORT}]: " POSTGRES_HOST_PORT
-POSTGRES_HOST_PORT="${POSTGRES_HOST_PORT:-$DEFAULT_POSTGRES_PORT}"
+validate_port "$ODOO_HOST_PORT"
 
 read -rp "Nombre del primer usuario administrador [Administrador]: " ODOO_ADMIN_NAME
 ODOO_ADMIN_NAME="${ODOO_ADMIN_NAME:-Administrador}"
@@ -149,85 +161,16 @@ ODOO_ADMIN_NAME="${ODOO_ADMIN_NAME:-Administrador}"
 read -rp "Usuario/correo del primer usuario administrador [admin]: " ODOO_ADMIN_LOGIN
 ODOO_ADMIN_LOGIN="${ODOO_ADMIN_LOGIN:-admin}"
 
-read -rsp "Contraseña administrador interno inicial de Odoo [auto-generar]: " ODOO_ADMIN_PASSWORD
-echo ""
-if [ -z "$ODOO_ADMIN_PASSWORD" ]; then
-  ODOO_ADMIN_PASSWORD="$(random_password)"
-fi
-
-echo ""
 while true; do
-  read -rp "¿Cuántos usuarios adicionales necesitás? [0]: " ADDITIONAL_USER_COUNT
-  ADDITIONAL_USER_COUNT="${ADDITIONAL_USER_COUNT:-0}"
-
-  if [[ "$ADDITIONAL_USER_COUNT" =~ ^[0-9]+$ ]]; then
+  read -rsp "Contraseña inicial del administrador de Odoo (obligatoria): " ODOO_ADMIN_PASSWORD
+  echo ""
+  if [ -n "$ODOO_ADMIN_PASSWORD" ]; then
     break
   fi
-
-  echo "Debes ingresar un número entero igual o mayor que 0."
+  echo "La contraseña no puede quedar vacía; no se mostrará ni se conservará después de inicializar."
 done
 
-declare -a ODOO_USER_NAMES=()
-declare -a ODOO_USER_LOGINS=()
-declare -a ODOO_USER_PASSWORDS=()
-ODOO_USERS_DATA=""
-
-for ((user_index = 1; user_index <= ADDITIONAL_USER_COUNT; user_index++)); do
-  echo ""
-  echo ">> Datos del usuario adicional ${user_index} de ${ADDITIONAL_USER_COUNT}"
-
-  while true; do
-    read -rp "Nombre: " USER_NAME
-    if [ -n "$USER_NAME" ]; then
-      break
-    fi
-    echo "El nombre no puede quedar vacío."
-  done
-
-  while true; do
-    read -rp "Usuario/correo: " USER_LOGIN
-
-    if [ -z "$USER_LOGIN" ]; then
-      echo "El usuario/correo no puede quedar vacío."
-      continue
-    fi
-
-    DUPLICATE_LOGIN="false"
-    if [ "$USER_LOGIN" = "$ODOO_ADMIN_LOGIN" ]; then
-      DUPLICATE_LOGIN="true"
-    else
-      for EXISTING_LOGIN in "${ODOO_USER_LOGINS[@]}"; do
-        if [ "$USER_LOGIN" = "$EXISTING_LOGIN" ]; then
-          DUPLICATE_LOGIN="true"
-          break
-        fi
-      done
-    fi
-
-    if [ "$DUPLICATE_LOGIN" = "false" ]; then
-      break
-    fi
-
-    echo "Ese usuario/correo ya fue ingresado. Usa uno diferente."
-  done
-
-  read -rsp "Contraseña [auto-generar]: " USER_PASSWORD
-  echo ""
-  if [ -z "$USER_PASSWORD" ]; then
-    USER_PASSWORD="$(random_password)"
-  fi
-
-  ODOO_USER_NAMES+=("$USER_NAME")
-  ODOO_USER_LOGINS+=("$USER_LOGIN")
-  ODOO_USER_PASSWORDS+=("$USER_PASSWORD")
-
-  ENCODED_NAME="$(base64_encode "$USER_NAME")"
-  ENCODED_LOGIN="$(base64_encode "$USER_LOGIN")"
-  ENCODED_PASSWORD="$(base64_encode "$USER_PASSWORD")"
-  ODOO_USERS_DATA+="${ENCODED_NAME}:${ENCODED_LOGIN}:${ENCODED_PASSWORD};"
-done
-
-read -rsp "Master password de Odoo Database Manager [auto-generar]: " ODOO_MASTER_PASSWORD
+read -rsp "Master password interna de Odoo [auto-generar]: " ODOO_MASTER_PASSWORD
 echo ""
 if [ -z "$ODOO_MASTER_PASSWORD" ]; then
   ODOO_MASTER_PASSWORD="$(random_password)"
@@ -240,12 +183,37 @@ MULTI_DB_OPTION="${MULTI_DB_OPTION:-n}"
 case "$MULTI_DB_OPTION" in
   s|S|si|SI|sí|SÍ|y|Y|yes|YES)
     ODOO_MULTI_DB="true"
-    ODOO_LIST_DB="True"
-    ODOO_DBFILTER=".*"
+    echo "Ingresa las bases permitidas separadas por comas."
+    read -rp "Bases permitidas [${ODOO_DB_NAME}]: " ALLOWED_DATABASES_INPUT
+    ALLOWED_DATABASES_INPUT="${ALLOWED_DATABASES_INPUT:-$ODOO_DB_NAME}"
+
+    IFS=',' read -ra REQUESTED_DATABASES <<< "$ALLOWED_DATABASES_INPUT"
+    declare -a ALLOWED_DATABASES=("$ODOO_DB_NAME")
+    for REQUESTED_DATABASE in "${REQUESTED_DATABASES[@]}"; do
+      NORMALIZED_DATABASE="$(dbify "$REQUESTED_DATABASE")"
+      if [ -z "$NORMALIZED_DATABASE" ]; then
+        echo "La lista contiene un nombre de base inválido."
+        exit 1
+      fi
+
+      DATABASE_ALREADY_LISTED="false"
+      for EXISTING_DATABASE in "${ALLOWED_DATABASES[@]}"; do
+        if [ "$NORMALIZED_DATABASE" = "$EXISTING_DATABASE" ]; then
+          DATABASE_ALREADY_LISTED="true"
+          break
+        fi
+      done
+      if [ "$DATABASE_ALREADY_LISTED" = "false" ]; then
+        ALLOWED_DATABASES+=("$NORMALIZED_DATABASE")
+      fi
+    done
+
+    ODOO_DB_NAMES="$(IFS=,; echo "${ALLOWED_DATABASES[*]}")"
+    ODOO_DBFILTER="^($(IFS='|'; echo "${ALLOWED_DATABASES[*]}"))$"
     ;;
   *)
     ODOO_MULTI_DB="false"
-    ODOO_LIST_DB="True"
+    ODOO_DB_NAMES="$ODOO_DB_NAME"
     ODOO_DBFILTER="^${ODOO_DB_NAME}$"
     ;;
 esac
@@ -325,19 +293,6 @@ echo "   ${PROJECT_ROOT}"
 
 mkdir -p config scripts enterprise
 
-# Compose usa este archivo únicamente al ejecutar odoo-init. Se elimina tanto si
-# la instalación finaliza correctamente como si el script termina con un error.
-USERS_ENV_FILE="${PROJECT_ROOT}/.odoo-users.env"
-cleanup_users_env() {
-  if [ -f "$USERS_ENV_FILE" ]; then
-    rm -f -- "$USERS_ENV_FILE"
-  fi
-}
-trap cleanup_users_env EXIT INT TERM
-
-umask 077
-printf 'ODOO_USERS_DATA=%s\n' "$ODOO_USERS_DATA" > "$USERS_ENV_FILE"
-
 # ------------------------
 # Clonar Odoo Core
 # ------------------------
@@ -391,15 +346,36 @@ ODOO_DB_NAME=${ODOO_DB_NAME}
 ODOO_DB_USER=${ODOO_DB_USER}
 ODOO_DB_PASSWORD=${ODOO_DB_PASSWORD}
 ODOO_HOST_PORT=${ODOO_HOST_PORT}
-POSTGRES_HOST_PORT=${POSTGRES_HOST_PORT}
 ODOO_ADMIN_NAME=${ODOO_ADMIN_NAME}
 ODOO_ADMIN_LOGIN=${ODOO_ADMIN_LOGIN}
 ODOO_ADMIN_PASSWORD=${ODOO_ADMIN_PASSWORD}
 ODOO_MASTER_PASSWORD=${ODOO_MASTER_PASSWORD}
 ODOO_MULTI_DB=${ODOO_MULTI_DB}
+ODOO_DB_NAMES=${ODOO_DB_NAMES}
+ODOO_MEMORY_LIMIT=1g
+ODOO_MEMORY_RESERVATION=400m
+ODOO_CPU_LIMIT=1.50
+ODOO_PIDS_LIMIT=300
+HOST_CONFIG_GID=$(id -g)
 EOF
 
 chmod 600 .env
+
+# Las credenciales del administrador solo existen durante la inicialización.
+# Se purgan incluso si una etapa posterior termina con error.
+remove_admin_credentials() {
+  if [ -f "${PROJECT_ROOT}/.env" ]; then
+    sed -i \
+      -e '/^ODOO_ADMIN_PASSWORD=/d' \
+      -e '/^ODOO_ADMIN_NAME=/d' \
+      -e '/^ODOO_ADMIN_LOGIN=/d' \
+      "${PROJECT_ROOT}/.env"
+    chmod 600 "${PROJECT_ROOT}/.env"
+  fi
+}
+trap remove_admin_credentials EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
 
 # ------------------------
 # Dockerfile actualizado
@@ -427,8 +403,9 @@ RUN apt-get update && apt-get install -y \\
     && apt-get clean \\
     && rm -rf /var/lib/apt/lists/*
 
-# Parchear el DEFAULT_MAX_CONTENT_LENGTH de Odoo a 1 GB
-RUN sed -i 's/DEFAULT_MAX_CONTENT_LENGTH = 128 \\* 1024 \\* 1024/DEFAULT_MAX_CONTENT_LENGTH = 1073741824/' /usr/lib/python3/dist-packages/odoo/http.py
+# Limitar las solicitudes HTTP a 100 MB. Nginx debe usar client_max_body_size 100m.
+RUN sed -i -E 's/^(DEFAULT_MAX_CONTENT_LENGTH = ).*/\1 100 * 1024 * 1024/' /usr/lib/python3/dist-packages/odoo/http.py \
+    && grep -q '^DEFAULT_MAX_CONTENT_LENGTH = 100 \* 1024 \* 1024$' /usr/lib/python3/dist-packages/odoo/http.py
 
 USER odoo
 EOF
@@ -467,16 +444,19 @@ data_dir = /var/lib/odoo
 http_interface = 0.0.0.0
 http_port = 8069
 
-proxy_mode = False
-list_db = ${ODOO_LIST_DB}
+proxy_mode = True
+list_db = False
 without_demo = all
 
-limit_time_cpu = 0
-limit_time_real = 0
+limit_time_cpu = 600
+limit_time_real = 1200
+limit_time_real_cron = 1200
+max_cron_threads = 1
 log_level = info
 EOF
 
-chmod 644 config/odoo.conf
+chgrp "$(id -g)" config/odoo.conf
+chmod 640 config/odoo.conf
 
 # ------------------------
 # Script inicializador de DB Odoo
@@ -487,9 +467,19 @@ cat > scripts/init-odoo-db.sh <<'EOF'
 #!/usr/bin/env bash
 set -euo pipefail
 
-echo ">> Verificando si la base Odoo '${ODOO_DB_NAME}' ya está inicializada..."
+IFS=',' read -ra DATABASE_NAMES <<< "$ODOO_DB_NAMES"
 
-if python3 <<'PY'
+for REQUIRED_VARIABLE in ODOO_ADMIN_NAME ODOO_ADMIN_LOGIN ODOO_ADMIN_PASSWORD; do
+  if [ -z "${!REQUIRED_VARIABLE:-}" ]; then
+    echo "Falta la variable requerida ${REQUIRED_VARIABLE}; se cancela la inicialización."
+    exit 1
+  fi
+done
+
+for DATABASE_NAME in "${DATABASE_NAMES[@]}"; do
+  echo ">> Verificando si la base Odoo '${DATABASE_NAME}' ya está inicializada..."
+
+  if ODOO_DB_NAME="$DATABASE_NAME" python3 <<'PY'
 import os
 import sys
 import psycopg2
@@ -510,29 +500,23 @@ try:
 except Exception:
     sys.exit(1)
 PY
-then
-  echo ">> La base '${ODOO_DB_NAME}' ya está inicializada. No se reinstala base."
-  exit 0
-fi
+  then
+    echo ">> La base '${DATABASE_NAME}' ya está inicializada. No se reinstala."
+    continue
+  fi
 
-echo ">> Inicializando base Odoo '${ODOO_DB_NAME}' con módulo base..."
+  echo ">> Inicializando base Odoo '${DATABASE_NAME}' con módulo base..."
 
-odoo -c /etc/odoo/odoo.conf \
-  -d "${ODOO_DB_NAME}" \
-  -i base \
-  --without-demo=all \
-  --stop-after-init
+  odoo -c /etc/odoo/odoo.conf \
+    -d "${DATABASE_NAME}" \
+    -i base \
+    --without-demo=all \
+    --stop-after-init
 
-echo ">> Configurando administrador y usuarios adicionales de Odoo..."
+  echo ">> Configurando el administrador de '${DATABASE_NAME}'..."
 
-odoo shell -c /etc/odoo/odoo.conf -d "${ODOO_DB_NAME}" <<'PY'
-import base64
+  odoo shell -c /etc/odoo/odoo.conf -d "${DATABASE_NAME}" <<'PY'
 import os
-
-
-def decode(value):
-    return base64.b64decode(value).decode('utf-8')
-
 
 admin = env.ref('base.user_admin', raise_if_not_found=False)
 
@@ -546,30 +530,11 @@ admin.write({
     'email': admin_login,
     'password': os.environ['ODOO_ADMIN_PASSWORD'],
 })
-
-users_data = os.environ.get('ODOO_USERS_DATA', '')
-users = env['res.users'].with_context(no_reset_password=True)
-
-for record in filter(None, users_data.split(';')):
-    encoded_name, encoded_login, encoded_password = record.split(':', 2)
-    name = decode(encoded_name)
-    login = decode(encoded_login)
-    password = decode(encoded_password)
-
-    if users.search_count([('login', '=', login)]):
-        raise ValueError(f"Ya existe un usuario de Odoo con el login {login!r}")
-
-    users.create({
-        'name': name,
-        'login': login,
-        'email': login,
-        'password': password,
-    })
-
 env.cr.commit()
 PY
+done
 
-echo ">> Base inicializada correctamente."
+echo ">> Bases permitidas inicializadas correctamente."
 EOF
 
 chmod +x scripts/init-odoo-db.sh
@@ -591,13 +556,18 @@ services:
       POSTGRES_PASSWORD: "${ODOO_DB_PASSWORD}"
     volumes:
       - db-data:/var/lib/postgresql/data
-    ports:
-      - "${POSTGRES_HOST_PORT}:5432"
+    expose:
+      - "5432"
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U \"$${POSTGRES_USER}\" -d \"$${POSTGRES_DB}\""]
       interval: 10s
       timeout: 5s
       retries: 10
+    logging:
+      driver: json-file
+      options:
+        max-size: "20m"
+        max-file: "5"
 
   odoo-init:
     build: .
@@ -607,22 +577,31 @@ services:
     depends_on:
       db:
         condition: service_healthy
+    group_add:
+      - "${HOST_CONFIG_GID}"
+    security_opt:
+      - no-new-privileges:true
     volumes:
       - web-data:/var/lib/odoo
       - ./config/odoo.conf:/etc/odoo/odoo.conf:ro
-      - ./enterprise:/mnt/enterprise-addons
-      - ./odoo/addons:/mnt/custom-addons
+      - ./enterprise:/mnt/enterprise-addons:ro
+      - ./odoo/addons:/mnt/custom-addons:ro
       - ./scripts/init-odoo-db.sh:/usr/local/bin/init-odoo-db.sh:ro
     environment:
       HOST: db
       USER: "${ODOO_DB_USER}"
       PASSWORD: "${ODOO_DB_PASSWORD}"
       ODOO_DB_NAME: "${ODOO_DB_NAME}"
-      ODOO_ADMIN_NAME: "${ODOO_ADMIN_NAME}"
-      ODOO_ADMIN_LOGIN: "${ODOO_ADMIN_LOGIN}"
-      ODOO_ADMIN_PASSWORD: "${ODOO_ADMIN_PASSWORD}"
-      ODOO_USERS_DATA: "${ODOO_USERS_DATA:-}"
+      ODOO_DB_NAMES: "${ODOO_DB_NAMES}"
+      ODOO_ADMIN_NAME: "${ODOO_ADMIN_NAME:-}"
+      ODOO_ADMIN_LOGIN: "${ODOO_ADMIN_LOGIN:-}"
+      ODOO_ADMIN_PASSWORD: "${ODOO_ADMIN_PASSWORD:-}"
     command: ["bash", "/usr/local/bin/init-odoo-db.sh"]
+    logging:
+      driver: json-file
+      options:
+        max-size: "20m"
+        max-file: "5"
 
   web:
     build: .
@@ -632,12 +611,20 @@ services:
       db:
         condition: service_healthy
     ports:
-      - "${ODOO_HOST_PORT}:8069"
+      - "127.0.0.1:${ODOO_HOST_PORT}:8069"
+    group_add:
+      - "${HOST_CONFIG_GID}"
+    security_opt:
+      - no-new-privileges:true
+    pids_limit: ${ODOO_PIDS_LIMIT}
+    mem_limit: "${ODOO_MEMORY_LIMIT}"
+    mem_reservation: "${ODOO_MEMORY_RESERVATION}"
+    cpus: "${ODOO_CPU_LIMIT}"
     volumes:
       - web-data:/var/lib/odoo
       - ./config/odoo.conf:/etc/odoo/odoo.conf:ro
-      - ./enterprise:/mnt/enterprise-addons
-      - ./odoo/addons:/mnt/custom-addons
+      - ./enterprise:/mnt/enterprise-addons:ro
+      - ./odoo/addons:/mnt/custom-addons:ro
     environment:
       HOST: db
       USER: "${ODOO_DB_USER}"
@@ -657,6 +644,23 @@ EOF
 fi
 
 cat >> docker-compose.yml <<'EOF'
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - >
+          python3 -c "import urllib.request;
+          urllib.request.urlopen(
+          'http://127.0.0.1:8069/web/login',
+          timeout=5)"
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 60s
+    logging:
+      driver: json-file
+      options:
+        max-size: "20m"
+        max-file: "5"
 
 volumes:
   db-data:
@@ -671,9 +675,12 @@ EOF
 echo ""
 echo ">> Levantando servicios..."
 
+validate_port "$ODOO_HOST_PORT"
 sudo docker compose -f docker-compose.yml up -d db
-sudo docker compose --env-file .env --env-file .odoo-users.env -f docker-compose.yml run --rm --build odoo-init
-cleanup_users_env
+sudo docker compose --env-file .env -f docker-compose.yml run --rm --build odoo-init
+remove_admin_credentials
+unset ODOO_ADMIN_PASSWORD
+validate_port "$ODOO_HOST_PORT"
 sudo docker compose -f docker-compose.yml up -d --build web
 
 echo ""
@@ -684,31 +691,19 @@ echo "   Odoo:    http://localhost:${ODOO_HOST_PORT}"
 echo "   DB inicial: ${ODOO_DB_NAME}"
 echo "   Multi DB:   ${ODOO_MULTI_DB}"
 echo "   Usuario interno Odoo inicial: ${ODOO_ADMIN_LOGIN}"
-echo "   Database Manager: http://localhost:${ODOO_HOST_PORT}/web/database/manager"
 
 echo ""
 echo "============================================================"
-echo " CREDENCIALES DE USUARIOS ODOO"
+echo " ADMINISTRADOR DE ODOO"
 echo "============================================================"
 printf 'Nombre:     %s\n' "$ODOO_ADMIN_NAME"
 printf 'Usuario:    %s\n' "$ODOO_ADMIN_LOGIN"
-printf 'Contraseña: %s\n' "$ODOO_ADMIN_PASSWORD"
-
-for ((user_index = 0; user_index < ADDITIONAL_USER_COUNT; user_index++)); do
-  echo "------------------------------------------------------------"
-  printf 'Nombre:     %s\n' "${ODOO_USER_NAMES[$user_index]}"
-  printf 'Usuario:    %s\n' "${ODOO_USER_LOGINS[$user_index]}"
-  printf 'Contraseña: %s\n' "${ODOO_USER_PASSWORDS[$user_index]}"
-done
-
 echo "============================================================"
-echo "Guarda o copia estas credenciales antes de cerrar la terminal."
+echo "La contraseña es la que ingresaste y no se muestra ni se conserva."
 
 echo ""
-echo "Las contraseñas quedaron guardadas en:"
-echo "   ${PROJECT_ROOT}/.env"
-echo "   ${PROJECT_ROOT}/config/odoo.conf"
-echo "Las contraseñas de los usuarios adicionales no se guardan en archivos."
+echo "La contraseña de base de datos permanece protegida en .env y odoo.conf."
+echo "Las credenciales iniciales del administrador fueron eliminadas de .env."
 echo ""
 echo "Comandos útiles:"
 echo "   cd ${PROJECT_ROOT}"

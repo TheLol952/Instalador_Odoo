@@ -18,23 +18,19 @@ chmod +x OdooInstall.sh
 ./OdooInstall.sh
 ```
 
-El instalador solicitará la versión y edición de Odoo, los nombres del entorno y de la base de datos, los puertos y las credenciales. También pedirá el nombre, usuario/correo y contraseña del primer administrador, además de la cantidad y los datos de los usuarios adicionales. Si se dejan vacías las contraseñas, se generan automáticamente.
+El instalador solicitará la versión y edición de Odoo, los nombres del entorno y de la base de datos, el puerto local y las credenciales. También pedirá el nombre, usuario/correo y contraseña del administrador inicial. La contraseña del administrador es obligatoria porque no se imprime ni se conserva después de inicializar Odoo.
 
-Al finalizar se muestra un resumen con el nombre, usuario y contraseña de todas las cuentas creadas para que pueda copiarse o guardarse. Las credenciales de los usuarios adicionales se pasan al inicializador mediante un archivo temporal protegido que se elimina al terminar; no quedan almacenadas en el proyecto. La credencial del administrador sí permanece en el archivo `.env`, con permisos restringidos, para conservar el comportamiento de administración del entorno.
+El instalador no crea usuarios adicionales. El nombre, el usuario/correo y la contraseña del administrador se pueden personalizar; estos valores se usan en `odoo-init` y después se eliminan de `.env`. El resumen final muestra únicamente el nombre y el usuario, nunca la contraseña.
 
-Cada instalación se crea en una nueva carpeta dentro del directorio del instalador. Sus secretos se guardan en `.env` y `config/odoo.conf`; estos archivos no deben subirse a Git.
+Cada instalación se crea en una nueva carpeta dentro del directorio del instalador. La contraseña de PostgreSQL y la master password interna se guardan en `.env` o `config/odoo.conf`; estos archivos no deben subirse a Git. `.env` usa permisos `600` y `config/odoo.conf`, `640`.
 
-El gestor de bases de datos queda habilitado en ambos modos y se abre en:
+PostgreSQL sólo se expone dentro de la red de Docker. Odoo se publica exclusivamente en `127.0.0.1`, de modo que debe colocarse detrás de Nginx u otro proxy inverso. Para Nginx, configura también:
 
-```text
-http://localhost:<PUERTO_ODOO>/web/database/manager
+```nginx
+client_max_body_size 100m;
 ```
 
-En modo de base única, `db_name` y `dbfilter` limitan el entorno a la base configurada,
-pero `list_db = True` permite verla en el gestor para crear respaldos. En modo múltiple,
-el filtro permite gestionar todas las bases accesibles para el usuario PostgreSQL.
-Las operaciones de respaldo, restauración, duplicación, creación y eliminación solicitan
-la master password almacenada como `admin_passwd` en `config/odoo.conf`.
+El gestor web de bases de datos y el listado de bases están deshabilitados. En modo de base única, `db_name` y `dbfilter` se limitan a la base configurada. En modo múltiple, el instalador solicita una lista explícita de nombres, genera un `dbfilter` restrictivo e inicializa cada base mediante `odoo-init`.
 
 ## Qué realiza
 
@@ -42,13 +38,16 @@ la master password almacenada como `admin_passwd` en `config/odoo.conf`.
 - Clona la rama seleccionada de Odoo Community.
 - Clona los módulos Enterprise cuando se selecciona esa edición.
 - Genera la configuración de PostgreSQL, Odoo y Docker Compose.
-- Inicializa la base de datos una sola vez, configura el administrador, crea los usuarios adicionales y levanta los contenedores.
+- Inicializa las bases permitidas una sola vez, configura el administrador y levanta los contenedores.
+- Limita CPU, memoria, procesos y duración de las solicitudes de Odoo mediante valores editables en `.env`.
+- Rota los logs de Docker y comprueba la salud de PostgreSQL y Odoo.
 
 El servicio `odoo-init` es una tarea auxiliar de una sola ejecución. Crea las tablas
 iniciales de Odoo y configura el primer usuario administrador, pero no es necesario
 para operar el entorno después de instalarlo. El instalador lo coloca en el perfil
 `init`, lo ejecuta explícitamente y elimina su contenedor al terminar. Por eso los
-comandos normales de Compose no lo vuelven a iniciar.
+comandos normales de Compose no lo vuelven a iniciar. El código de Community y
+Enterprise se monta como solo lectura tanto en `odoo-init` como en `web`.
 
 > El script instala paquetes del sistema y configura Docker, por lo que solicitará permisos de administrador. Se recomienda revisarlo antes de ejecutarlo en un servidor de producción.
 
@@ -72,11 +71,7 @@ que realmente quieras borrar todos los datos del entorno. Mantén también el mi
 `COMPOSE_PROJECT_NAME` de `.env`; cambiarlo puede hacer que Compose conecte volúmenes
 nuevos y el entorno parezca vacío.
 
-Si excepcionalmente necesitas ejecutar de nuevo la comprobación de inicialización:
-
-```bash
-sudo docker compose run --rm odoo-init
-```
-
-El script verifica primero si la tabla principal de módulos ya existe y, si la base
-está inicializada, termina sin reinstalarla.
+Las credenciales del administrador se eliminan de `.env` al finalizar, por lo que
+`odoo-init` está diseñado para ejecutarse durante la instalación. Si se requiere una
+reinicialización administrativa, hay que proporcionar explícitamente esas variables
+de entorno durante esa ejecución.
