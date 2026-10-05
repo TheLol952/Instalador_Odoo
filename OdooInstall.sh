@@ -404,7 +404,7 @@ RUN apt-get update && apt-get install -y \\
     && rm -rf /var/lib/apt/lists/*
 
 # Limitar las solicitudes HTTP a 100 MB. Nginx debe usar client_max_body_size 100m.
-RUN sed -i -E 's/(DEFAULT_MAX_CONTENT_LENGTH = ).*/\\1 100 * 1024 * 1024/' /usr/lib/python3/dist-packages/odoo/http.py || true
+RUN sed -i -E 's/(DEFAULT_MAX_CONTENT_LENGTH = ).*/\1 100 * 1024 * 1024/' /usr/lib/python3/dist-packages/odoo/http.py || true
 
 USER odoo
 EOF
