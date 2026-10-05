@@ -494,8 +494,15 @@ try:
         password=os.environ["PASSWORD"],
     )
     cur = conn.cursor()
-    cur.execute("SELECT to_regclass('public.ir_module_module')")
-    initialized = cur.fetchone()[0] is not None
+    cur.execute("""
+        SELECT EXISTS (
+            SELECT 1
+              FROM ir_module_module
+             WHERE name = 'base'
+               AND state = 'installed'
+        )
+    """)
+    initialized = cur.fetchone()[0]
     cur.close()
     conn.close()
     sys.exit(0 if initialized else 1)
